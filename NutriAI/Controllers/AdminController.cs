@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NutriAI.Application.DTOs;
 using NutriAI.Application.Interfaces.Services;
 using NutriAI.Domain.Constants;
+using NutriAI.ViewModels.Admin;
 
 namespace NutriAI.Controllers;
 
@@ -10,17 +11,66 @@ namespace NutriAI.Controllers;
 public class AdminController : Controller
 {
     private readonly IAdminService _adminService;
+    private readonly IAiSettingsService _aiSettingsService;
 
-    public AdminController(IAdminService adminService)
+    public AdminController(IAdminService adminService, IAiSettingsService aiSettingsService)
     {
         _adminService = adminService;
+        _aiSettingsService = aiSettingsService;
     }
 
-    public IActionResult Index()
+    public async Task<IActionResult> Index(CancellationToken cancellationToken)
     {
         ViewData["Title"] = "Admin Dashboard";
         ViewData["ActiveNav"] = "Admin";
-        return View();
+        return View(await BuildAiSettingsViewModelAsync(cancellationToken));
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> AiSettings(CancellationToken cancellationToken)
+    {
+        ViewData["Title"] = "Admin Dashboard";
+        ViewData["ActiveNav"] = "Admin";
+        return View("Index", await BuildAiSettingsViewModelAsync(cancellationToken));
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> AiSettings(AiSettingsViewModel viewModel, CancellationToken cancellationToken)
+    {
+        ViewData["Title"] = "Admin Dashboard";
+        ViewData["ActiveNav"] = "Admin";
+
+        var formData = await _aiSettingsService.GetFormDataAsync(cancellationToken);
+        viewModel.AvailableModels = formData.AvailableModels;
+        viewModel.ApiKeyLastFour = formData.ApiKeyLastFour;
+
+        if (string.IsNullOrWhiteSpace(viewModel.ApiKey) && string.IsNullOrWhiteSpace(formData.ApiKeyLastFour))
+            ModelState.AddModelError(nameof(viewModel.ApiKey), "OpenAI API Key is required.");
+
+        if (!ModelState.IsValid)
+            return View("Index", viewModel);
+
+        var result = await _aiSettingsService.SaveAsync(viewModel.ApiKey, viewModel.Model, cancellationToken);
+        if (!result.Succeeded)
+        {
+            ModelState.AddModelError(string.Empty, result.Message);
+            return View("Index", viewModel);
+        }
+
+        TempData["AiSettingsSuccess"] = result.Message;
+        return RedirectToAction(nameof(Index));
+    }
+
+    private async Task<AiSettingsViewModel> BuildAiSettingsViewModelAsync(CancellationToken cancellationToken)
+    {
+        var formData = await _aiSettingsService.GetFormDataAsync(cancellationToken);
+        return new AiSettingsViewModel
+        {
+            Model = formData.Model,
+            ApiKeyLastFour = formData.ApiKeyLastFour,
+            AvailableModels = formData.AvailableModels
+        };
     }
 
     [HttpGet]

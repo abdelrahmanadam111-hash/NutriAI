@@ -1,3 +1,4 @@
+@model NutriAI.ViewModels.Admin.AiSettingsViewModel
 @{
     ViewData["Title"] = "Admin Dashboard";
     ViewData["ActiveNav"] = "Admin";
@@ -7,6 +8,8 @@
     <h1>Admin Dashboard</h1>
     <p class="subtitle">Platform health, users, and activity</p>
 </div>
+
+<partial name="_AiSettings" model="Model" />
 
 <div class="row g-4 mb-4" id="adminStats"></div>
 
@@ -86,6 +89,7 @@
 </div>
 
 @section Scripts {
+    <partial name="_ValidationScriptsPartial" />
     <script src="~/js/admin.js" asp-append-version="true"></script>
 }
 

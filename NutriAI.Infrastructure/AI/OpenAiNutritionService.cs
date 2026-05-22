@@ -3,7 +3,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using NutriAI.Application.Configuration;
 using NutriAI.Application.DTOs;
 using NutriAI.Application.Interfaces.Services;
@@ -19,20 +18,22 @@ public class OpenAiNutritionService : IAiNutritionService
     };
 
     private readonly HttpClient _httpClient;
-    private readonly OpenAiSettings _settings;
+    private readonly IOpenAiSettingsStore _settingsStore;
     private readonly ILogger<OpenAiNutritionService> _logger;
 
     public OpenAiNutritionService(
         HttpClient httpClient,
-        IOptions<OpenAiSettings> settings,
+        IOpenAiSettingsStore settingsStore,
         ILogger<OpenAiNutritionService> logger)
     {
         _httpClient = httpClient;
-        _settings = settings.Value;
+        _settingsStore = settingsStore;
         _logger = logger;
     }
 
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(_settings.ApiKey);
+    private OpenAiSettings Settings => _settingsStore.GetCurrent();
+
+    public bool IsConfigured => !string.IsNullOrWhiteSpace(Settings.ApiKey);
 
     public Task<MealAnalysisResult?> AnalyzeMealAsync(string description, UserNutritionContext context, CancellationToken cancellationToken = default) =>
         ExecuteWithRetryAsync(() => SendJsonAsync<MealAnalysisResult>(
@@ -157,7 +158,7 @@ public class OpenAiNutritionService : IAiNutritionService
         {
             var body = new Dictionary<string, object>
             {
-                ["model"] = _settings.Model,
+                ["model"] = Settings.Model,
                 ["temperature"] = 0.4,
                 ["messages"] = new object[]
                 {
@@ -169,9 +170,9 @@ public class OpenAiNutritionService : IAiNutritionService
             if (jsonMode)
                 body["response_format"] = new { type = "json_object" };
 
-            var requestUri = $"{_settings.BaseUrl.TrimEnd('/')}/chat/completions";
+            var requestUri = $"{Settings.BaseUrl.TrimEnd('/')}/chat/completions";
             using var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Settings.ApiKey);
             request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
 
             using var response = await _httpClient.SendAsync(request, cancellationToken);
