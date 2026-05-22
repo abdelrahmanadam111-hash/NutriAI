@@ -10,6 +10,7 @@ using NutriAI.Domain.Entities;
 using NutriAI.Infrastructure.Data;
 using NutriAI.Infrastructure.Repositories;
 using NutriAI.Infrastructure.AI;
+using NutriAI.Infrastructure.Configuration;
 using NutriAI.Infrastructure.Services;
 using NutriAI.Infrastructure.Services.Email;
 
@@ -24,6 +25,8 @@ public static class DependencyInjection
         services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));
         services.Configure<AdminSeedSettings>(configuration.GetSection(AdminSeedSettings.SectionName));
         services.Configure<OpenAiSettings>(configuration.GetSection(OpenAiSettings.SectionName));
+        services.AddSingleton<IOpenAiSettingsStore, JsonOpenAiSettingsStore>();
+        services.AddScoped<IAiSettingsService, AiSettingsService>();
 
         services.AddHttpClient<IAiNutritionService, OpenAiNutritionService>(client =>
         {
