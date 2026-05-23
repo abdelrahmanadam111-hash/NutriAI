@@ -44,14 +44,13 @@ public class AdminController : Controller
         var formData = await _aiSettingsService.GetFormDataAsync(cancellationToken);
         viewModel.AvailableModels = formData.AvailableModels;
         viewModel.ApiKeyLastFour = formData.ApiKeyLastFour;
-
         if (string.IsNullOrWhiteSpace(viewModel.ApiKey) && string.IsNullOrWhiteSpace(formData.ApiKeyLastFour))
             ModelState.AddModelError(nameof(viewModel.ApiKey), "OpenAI API Key is required.");
 
         if (!ModelState.IsValid)
             return View("Index", viewModel);
 
-        var result = await _aiSettingsService.SaveAsync(viewModel.ApiKey, viewModel.Model, cancellationToken);
+        var result = await _aiSettingsService.SaveAsync(viewModel.ApiKey, viewModel.SelectedModel, cancellationToken);
         if (!result.Succeeded)
         {
             ModelState.AddModelError(string.Empty, result.Message);
@@ -62,12 +61,20 @@ public class AdminController : Controller
         return RedirectToAction(nameof(Index));
     }
 
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> TestAiSettings(CancellationToken cancellationToken)
+    {
+        var result = await _aiSettingsService.TestConnectionAsync(cancellationToken);
+        return Json(new { success = result.Succeeded, message = result.Message, model = result.Model });
+    }
+
     private async Task<AiSettingsViewModel> BuildAiSettingsViewModelAsync(CancellationToken cancellationToken)
     {
         var formData = await _aiSettingsService.GetFormDataAsync(cancellationToken);
         return new AiSettingsViewModel
         {
-            Model = formData.Model,
+            SelectedModel = formData.SelectedModel,
             ApiKeyLastFour = formData.ApiKeyLastFour,
             AvailableModels = formData.AvailableModels
         };

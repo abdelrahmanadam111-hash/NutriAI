@@ -35,6 +35,22 @@ public class OpenAiNutritionService : IAiNutritionService
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(Settings.ApiKey);
 
+    public async Task<OpenAiConnectionTestResult> TestConnectionAsync(CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured)
+            return new OpenAiConnectionTestResult(false, "OpenAI API key is not configured.", Settings.Model);
+
+        var result = await SendChatAsync(
+            "You are a connectivity check. Reply with exactly the word OK and nothing else.",
+            "ping",
+            jsonMode: false,
+            cancellationToken);
+
+        return result.Content != null
+            ? new OpenAiConnectionTestResult(true, $"Model '{result.ModelUsed}' is working.", result.ModelUsed)
+            : new OpenAiConnectionTestResult(false, result.Error ?? "OpenAI request failed.", Settings.Model);
+    }
+
     public Task<MealAnalysisResult?> AnalyzeMealAsync(string description, UserNutritionContext context, CancellationToken cancellationToken = default) =>
         ExecuteWithRetryAsync(() => SendJsonAsync<MealAnalysisResult>(
             """
@@ -123,7 +139,7 @@ public class OpenAiNutritionService : IAiNutritionService
         var first = await operation();
         if (first != null) return first;
 
-        _logger.LogInformation("OpenAI call failed; retrying in 5 seconds...");
+        _logger.LogInformation("OpenAI call failed for model {Model}; retrying in 5 seconds...", Settings.Model);
         await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
 
         return await operation();
@@ -131,45 +147,64 @@ public class OpenAiNutritionService : IAiNutritionService
 
     private async Task<T?> SendJsonAsync<T>(string systemPrompt, string userPrompt, CancellationToken cancellationToken) where T : class
     {
-        var content = await SendChatAsync(systemPrompt, userPrompt, jsonMode: true, cancellationToken);
-        if (string.IsNullOrWhiteSpace(content)) return null;
+        var result = await SendChatAsync(systemPrompt, userPrompt, jsonMode: true, cancellationToken);
+        if (string.IsNullOrWhiteSpace(result.Content)) return null;
+
+        var normalized = NormalizeModelContent(result.Content);
+        if (string.IsNullOrWhiteSpace(normalized)) return null;
 
         try
         {
-            return JsonSerializer.Deserialize<T>(content, JsonOptions);
+            return JsonSerializer.Deserialize<T>(normalized, JsonOptions);
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "Failed to parse OpenAI JSON response");
+            _logger.LogWarning(ex, "Failed to parse OpenAI JSON from model {Model}", result.ModelUsed);
             return null;
         }
     }
 
     private async Task<string?> SendTextAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken)
     {
-        return await SendChatAsync(systemPrompt, userPrompt, jsonMode: false, cancellationToken);
+        var result = await SendChatAsync(systemPrompt, userPrompt, jsonMode: false, cancellationToken);
+        return result.Content;
     }
 
-    private async Task<string?> SendChatAsync(string systemPrompt, string userPrompt, bool jsonMode, CancellationToken cancellationToken)
+    private async Task<ChatCallResult> SendChatAsync(
+        string systemPrompt,
+        string userPrompt,
+        bool jsonMode,
+        CancellationToken cancellationToken)
     {
-        if (!IsConfigured) return null;
+        if (!IsConfigured)
+            return ChatCallResult.Fail(Settings.Model, "API key is not configured.");
 
+        var modelCandidates = OpenAiModelOptions.GetModelFallbacks(Settings.Model);
+        ChatCallResult? lastFailure = null;
+
+        foreach (var modelId in modelCandidates)
+        {
+            var result = await SendChatAsyncForModel(modelId, systemPrompt, userPrompt, jsonMode, cancellationToken);
+            if (result.Content != null)
+                return result;
+
+            lastFailure = result;
+            _logger.LogWarning("OpenAI request failed for model {Model}: {Error}", modelId, result.Error);
+        }
+
+        return lastFailure ?? ChatCallResult.Fail(Settings.Model, "OpenAI request failed.");
+    }
+
+    private async Task<ChatCallResult> SendChatAsyncForModel(
+        string modelId,
+        string systemPrompt,
+        string userPrompt,
+        bool jsonMode,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            var body = new Dictionary<string, object>
-            {
-                ["model"] = Settings.Model,
-                ["temperature"] = 0.4,
-                ["messages"] = new object[]
-                {
-                    new { role = "system", content = systemPrompt },
-                    new { role = "user", content = userPrompt }
-                }
-            };
-
-            if (jsonMode)
-                body["response_format"] = new { type = "json_object" };
-
+            var body = BuildRequestBody(modelId, systemPrompt, userPrompt, jsonMode);
             var requestUri = $"{Settings.BaseUrl.TrimEnd('/')}/chat/completions";
             using var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Settings.ApiKey);
@@ -180,22 +215,105 @@ public class OpenAiNutritionService : IAiNutritionService
 
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("OpenAI API error {Status}: {Body}", response.StatusCode, responseJson);
-                return null;
+                var error = ParseOpenAiError(responseJson) ?? $"HTTP {(int)response.StatusCode}";
+                _logger.LogWarning("OpenAI API error for model {Model} ({Status}): {Body}", modelId, response.StatusCode, responseJson);
+                return ChatCallResult.Fail(modelId, error);
             }
 
             using var doc = JsonDocument.Parse(responseJson);
-            return doc.RootElement
+            var content = doc.RootElement
                 .GetProperty("choices")[0]
                 .GetProperty("message")
                 .GetProperty("content")
                 .GetString();
+
+            return ChatCallResult.Ok(modelId, NormalizeModelContent(content));
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
-            _logger.LogWarning(ex, "OpenAI request failed");
-            return null;
+            _logger.LogWarning(ex, "OpenAI request failed for model {Model}", modelId);
+            return ChatCallResult.Fail(modelId, ex.Message);
         }
+    }
+
+    private static Dictionary<string, object> BuildRequestBody(string modelId, string systemPrompt, string userPrompt, bool jsonMode)
+    {
+        var body = new Dictionary<string, object>
+        {
+            ["model"] = modelId,
+            ["messages"] = new object[]
+            {
+                new { role = "system", content = systemPrompt },
+                new { role = "user", content = userPrompt }
+            }
+        };
+
+        if (OpenAiModelOptions.IsReasoningModel(modelId))
+        {
+            body["temperature"] = 1;
+            body["max_completion_tokens"] = 4096;
+            body["reasoning_effort"] = "low";
+        }
+        else
+        {
+            body["temperature"] = 0.4;
+            body["max_completion_tokens"] = 2048;
+        }
+
+        if (jsonMode)
+            body["response_format"] = new { type = "json_object" };
+
+        return body;
+    }
+
+    private static string? NormalizeModelContent(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+            return null;
+
+        content = content.Trim();
+        if (!content.StartsWith("```", StringComparison.Ordinal))
+            return content;
+
+        var firstNewLine = content.IndexOf('\n');
+        if (firstNewLine < 0)
+            return content;
+
+        content = content[(firstNewLine + 1)..].TrimEnd();
+        if (content.EndsWith("```", StringComparison.Ordinal))
+            content = content[..^3].TrimEnd();
+
+        return content;
+    }
+
+    private static string? ParseOpenAiError(string responseJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(responseJson);
+            if (doc.RootElement.TryGetProperty("error", out var error) &&
+                error.TryGetProperty("message", out var message))
+                return message.GetString();
+        }
+        catch
+        {
+            // ignored
+        }
+
+        return null;
+    }
+
+    private sealed class ChatCallResult
+    {
+        public string? Content { get; init; }
+        public string? Error { get; init; }
+        public string ModelUsed { get; init; } = string.Empty;
+
+        public static ChatCallResult Ok(string model, string? content) =>
+            new() { Content = content, ModelUsed = model };
+
+        public static ChatCallResult Fail(string model, string? error) =>
+            new() { Error = error, ModelUsed = model };
     }
 
     private sealed class MealPlanResponse
