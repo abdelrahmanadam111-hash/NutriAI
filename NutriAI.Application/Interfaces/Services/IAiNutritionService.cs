@@ -42,4 +42,8 @@ public interface IAiNutritionService
         UserNutritionContext context,
         double latestWeight,
         CancellationToken cancellationToken = default);
+
+    Task<OpenAiConnectionTestResult> TestConnectionAsync(CancellationToken cancellationToken = default);
 }
+
+public sealed record OpenAiConnectionTestResult(bool Succeeded, string Message, string Model);

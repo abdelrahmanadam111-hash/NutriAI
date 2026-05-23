@@ -11,7 +11,7 @@ public class AiSettingsViewModel
 
     [Required(ErrorMessage = "Please select a model.")]
     [Display(Name = "Model")]
-    public string Model { get; set; } = OpenAiModelOptions.DefaultModel;
+    public string SelectedModel { get; set; } = OpenAiModelOptions.DefaultModel;
 
     public string? ApiKeyLastFour { get; set; }
 

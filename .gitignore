@@ -120,5 +120,6 @@ healthchecksdb
 appsettings.Development.json
 appsettings.Production.json
 
-# Runtime admin-persisted settings (contains API keys)
+# Runtime admin-persisted settings (contains API keys — never commit)
 NutriAI/Data/openai-settings.json
+**/Data/openai-settings.json
